@@ -1,0 +1,146 @@
+#!/bin/bash
+
+function finder() {
+	CAT="cat"
+	checkCommand bat && CAT="bat"
+	checkCommand batcat && CAT="batcat"
+
+	if [[ "$#" -gt 0 ]]; then
+		fzf --preview "$CAT --color always --decorations never $HOME/{}" -1 -q "$*"
+	else
+		fzf --preview "$CAT --color always --decorations never $HOME/{}"
+	fi
+
+}
+
+function editfile() {
+	declare -a pe=("$DOTVI_EDITOR" "$EDITOR" vim vi nano pico echo)
+	for e in "${pe[@]}"; do
+		command -v "$e" &>/dev/null || continue
+		"$e" "$1"
+		return $?
+	done
+
+}
+
+function checkCommandOrFatal() {
+	checkCommand "$1" || {
+		echo 1>&2 "command $1 not found"
+		exit 1
+	}
+}
+
+function checkCommand() {
+	command -v "$1" &>/dev/null
+	return $?
+}
+
+function getFilteredFiles() {
+	IGNORE_FILE="$HOME/.dotviignore"
+	test -f "$IGNORE_FILE" || touch "$IGNORE_FILE"
+	mapfile -t ignores <"$IGNORE_FILE"
+	(
+		# most likely your desired config file has depth 1 or 2, as in ~/.myconfig, ~/.config/myconf
+		# or not as likely depth 3 as in ~/.config/myconf/config
+		# so we fill fzf up with the most likely candidates at first
+		find "$HOME" -mindepth 1 -maxdepth 2 -type f -path "$HOME/.*" 2>/dev/null
+		find "$HOME" -mindepth 3 -maxdepth 3 -type f -path "$HOME/.*" 2>/dev/null
+		find "$HOME" -mindepth 4 -maxdepth 6 -type f -path "$HOME/.*" 2>/dev/null
+
+	) | sed "s#$HOME/##" | ./fnmatchfilter "${ignores[@]}"
+
+}
+
+function preflightcheck() {
+
+	checkCommandOrFatal fzf
+	checkCommandOrFatal find
+	checkCommandOrFatal mapfile
+	checkCommandOrFatal sed
+
+	test -x fnmatchfilter || {
+		checkCommandOrFatal make
+		checkCommandOrFatal gcc
+		make fnmatchfilter || {
+			exit 1
+		}
+	}
+}
+
+function run() {
+	preflightcheck
+	FILE="$(
+		getFilteredFiles | finder "$@"
+	)" || exit 1
+	FILE="$HOME/$FILE"
+	editfile "$FILE"
+	exit $?
+}
+
+function min() {
+	echo $(("$1" < "$2" ? "$1" : "$2"))
+}
+function max() {
+	echo $(("$1" > "$2" ? "$1" : "$2"))
+}
+
+function clamp() {
+	min "$(max "$1" "$2")" "$3"
+}
+
+cd "$(dirname "$(realpath "$0")")" || exit 1
+
+if [[ "$#" -gt 0 ]] && [[ "$1" =~ ^-.* ]]; then
+	if [[ "$1" == "--" ]]; then
+		shift
+		run "$@"
+	else
+		case "$1" in
+		-run)
+			run "$@"
+			;;
+		-list)
+			getFilteredFiles
+			;;
+		-group)
+			checkCommandOrFatal cut
+			checkCommandOrFatal sort
+			checkCommandOrFatal uniq
+			checkCommandOrFatal tail
+			checkCommandOrFatal tput
+			num="$(clamp "${2:-3}" 1 5)"
+			getFilteredFiles | cut -d/ -f1-"$num" | sort | uniq -c | sort -h | tail -n "$(tput lines)" | sed 's#$#/*#'
+			;;
+		-count)
+			getFilteredFiles | wc -l
+			;;
+		*)
+			checkCommandOrFatal tput
+			checkCommandOrFatal fold
+
+			fold -s -w "$(tput cols)" <<EOS
+
+dotvi: edit your dotfiles the easy way
+
+actions:
+  -run (or no dash-parameter)   open fzf with all non filtered dotfiles, choosing a file opens this file in an editor
+                                optional parameter: search query
+  -list                         list all non filtered dotfiles
+  -count                        count all non filtered dotfiles
+  -group                        get a list of folders with a given depth and their file count, to help to manage your ignorefile
+                                optional parameter: depth (1-5), default is 3
+  -help                         this help
+
+  ~/.dotviignore is your ignorefile, you can use fnmatch-style globbing there
+
+  the chosen editor is the first in the list: "\$DOTVI_EDITOR" "\$EDITOR" vim vi nano pico echo, sure, echo isn't an editor but if none suitable editor is present you get the file name at least
+
+
+EOS
+			;;
+		esac
+	fi
+
+else
+	run "$@"
+fi
